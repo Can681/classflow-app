@@ -1,5 +1,6 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import {
+  ActivityIndicator,
   Modal,
   Platform,
   Pressable,
@@ -12,7 +13,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { useSchedule } from '../context/ScheduleContext';
 import { EDUCATION_SYSTEM_INJECT_JS, smartParseSchedule } from '../utils/parsers';
-import { SCHOOL_EDU_PRESETS } from '../constants/defaults';
+import { DLOU_SSO_URL, SCHOOL_EDU_PRESETS } from '../constants/defaults';
 import { Course } from '../types/schedule';
 
 let NativeWebView: any = null;
@@ -24,6 +25,26 @@ if (Platform.OS !== 'web') {
   }
 }
 
+const MOBILE_CHROME_UA =
+  'Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36';
+
+// Rewrite window.open and target="_blank" so 新正方 menu links open inside the same WebView
+const SINGLE_WINDOW_SHIM_JS = `
+(function() {
+  window.open = function(url) {
+    if (url) { window.location.href = url; }
+    return window;
+  };
+  document.addEventListener('click', function(e) {
+    var a = e.target && e.target.closest ? e.target.closest('a[target="_blank"]') : null;
+    if (a && a.href) {
+      a.removeAttribute('target');
+    }
+  }, true);
+})();
+true;
+`;
+
 interface EduWebViewModalProps {
   visible: boolean;
   initialUrl?: string;
@@ -33,7 +54,7 @@ interface EduWebViewModalProps {
 
 export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
   visible,
-  initialUrl = 'https://jwgl.example.edu.cn/jwglxt/',
+  initialUrl = DLOU_SSO_URL,
   onClose,
   onImported,
 }) => {
@@ -41,8 +62,20 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
   const webViewRef = useRef<any>(null);
   const [urlInput, setUrlInput] = useState(initialUrl);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
-  const [statusMsg, setStatusMsg] = useState('输入学校教务网址登录，打开课表页后点击「一键抓取」');
+  const [loading, setLoading] = useState(false);
+  const [statusMsg, setStatusMsg] = useState(
+    '登录统一身份认证 → 进入「学生课表查询」→ 点击下方「一键抓取」'
+  );
   const [scraping, setScraping] = useState(false);
+
+  // Sync URL whenever modal opens with a chosen preset
+  useEffect(() => {
+    if (visible && initialUrl) {
+      setUrlInput(initialUrl);
+      setCurrentUrl(initialUrl);
+      setStatusMsg('正在打开教务系统，请使用学号登录后进入课表页面...');
+    }
+  }, [visible, initialUrl]);
 
   const navigateTo = (target: string) => {
     let cleaned = target.trim();
@@ -57,7 +90,7 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
   const triggerScrape = () => {
     if (!webViewRef.current) return;
     setScraping(true);
-    setStatusMsg('正在扫描教务页面课表数据...');
+    setStatusMsg('正在扫描当前页面课表数据...');
     webViewRef.current.injectJavaScript(EDUCATION_SYSTEM_INJECT_JS);
   };
 
@@ -75,7 +108,7 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
           onImported(parsed.courses, `教务内置浏览器 (${parsed.sourceLabel})`);
           onClose();
         } else {
-          setStatusMsg('未识别到课表表格，请确认已进入「个人课表查询」页面后重试');
+          setStatusMsg('未识别到课表表格，请确认已进入「个人课表查询」且课表已加载完成后重试');
         }
       }
     } catch {
@@ -87,12 +120,21 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
     <Modal visible={visible} animationType="slide" onRequestClose={onClose}>
       <View style={[styles.root, { backgroundColor: theme.bg }]}>
         {/* Top Browser Bar */}
-        <View style={[styles.topBar, { backgroundColor: theme.surface, borderBottomColor: theme.border }]}>
+        <View
+          style={[
+            styles.topBar,
+            { backgroundColor: theme.surface, borderBottomColor: theme.border },
+          ]}
+        >
           <Pressable onPress={onClose} style={styles.iconBtn} hitSlop={8}>
             <Ionicons name="close" size={22} color={theme.text} />
           </Pressable>
           <View style={[styles.urlBox, { backgroundColor: theme.bg, borderColor: theme.border }]}>
-            <Ionicons name="lock-closed" size={13} color={theme.textMuted} />
+            {loading ? (
+              <ActivityIndicator size="small" color={theme.primary} />
+            ) : (
+              <Ionicons name="lock-closed" size={13} color={theme.textMuted} />
+            )}
             <TextInput
               value={urlInput}
               onChangeText={setUrlInput}
@@ -127,9 +169,31 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
             <NativeWebView
               ref={webViewRef}
               source={{ uri: currentUrl }}
+              userAgent={MOBILE_CHROME_UA}
+              originWhitelist={['*']}
               javaScriptEnabled
               domStorageEnabled
               sharedCookiesEnabled
+              thirdPartyCookiesEnabled
+              mixedContentMode="always"
+              setSupportMultipleWindows={false}
+              javaScriptCanOpenWindowsAutomatically
+              allowsInlineMediaPlayback
+              injectedJavaScriptBeforeContentLoaded={SINGLE_WINDOW_SHIM_JS}
+              onLoadStart={() => setLoading(true)}
+              onLoadEnd={() => {
+                setLoading(false);
+                webViewRef.current?.injectJavaScript(SINGLE_WINDOW_SHIM_JS);
+              }}
+              onError={(e: any) => {
+                setLoading(false);
+                const desc = e?.nativeEvent?.description || '网络连接失败';
+                setStatusMsg(`页面加载失败 (${desc})。若在校外访问，请先连接学校 VPN 或校园网后点击刷新`);
+              }}
+              onHttpError={(e: any) => {
+                setLoading(false);
+                setStatusMsg(`服务器返回 HTTP ${e?.nativeEvent?.statusCode || ''}，可尝试刷新或检查网络`);
+              }}
               onNavigationStateChange={(nav: any) => {
                 if (nav?.url) setUrlInput(nav.url);
               }}
@@ -169,7 +233,12 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
           </View>
         ) : (
           <ScrollView contentContainerStyle={styles.webFallback}>
-            <View style={[styles.webCard, { backgroundColor: theme.surface, borderColor: theme.border }]}>
+            <View
+              style={[
+                styles.webCard,
+                { backgroundColor: theme.surface, borderColor: theme.border },
+              ]}
+            >
               <View style={[styles.webIconWrap, { backgroundColor: theme.primarySoft }]}>
                 <Ionicons name="phone-portrait-outline" size={32} color={theme.primary} />
               </View>
@@ -177,13 +246,9 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
                 内置教务 WebView 浏览器（移动端专属）
               </Text>
               <Text style={[styles.webDesc, { color: theme.textSecondary }]}>
-                在手机端（Expo Go / Android / iOS）中，此窗口会直接渲染真实教务系统网页，你可以登录学校教务并一键自动抓取新正方、强智、青果、URP 课表。
+                在手机 App 中，此窗口会直接打开大连海洋大学统一身份认证页面，登录后进入课表页即可一键抓取导入。
               </Text>
-              <Text style={[styles.webDesc, { color: theme.textSecondary, marginTop: 8 }]}>
-                当前处于桌面 Web 预览模式（受浏览器跨域安全策略限制），你可以直接返回上一页，使用「教务 JSON / 网页源码粘贴导入」功能立即体验！
-              </Text>
-
-              <Text style={[styles.presetTitle, { color: theme.text }]}>支持的常见教务系统适配：</Text>
+              <Text style={[styles.presetTitle, { color: theme.text }]}>已内置教务入口：</Text>
               {SCHOOL_EDU_PRESETS.map((p) => (
                 <View
                   key={p.name}
@@ -197,10 +262,12 @@ export const EduWebViewModal: React.FC<EduWebViewModalProps> = ({
                   </Text>
                 </View>
               ))}
-
               <Pressable
                 onPress={onClose}
-                style={[styles.scrapeBtn, { backgroundColor: theme.primary, marginTop: 16, width: '100%' }]}
+                style={[
+                  styles.scrapeBtn,
+                  { backgroundColor: theme.primary, marginTop: 16, width: '100%' },
+                ]}
               >
                 <Text style={styles.scrapeBtnText}>返回使用源码 / JSON 智能导入</Text>
               </Pressable>

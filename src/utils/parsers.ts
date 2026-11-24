@@ -469,38 +469,96 @@ export function exportToIcs(courses: Course[], timeSlots: TimeSlot[], settings: 
 
 /**
  * Injected JS script for mobile WebView to automatically extract timetable data
- * from 新正方 (ZFSoft), 强智 (QZ), 青果 (Kingosoft), URP, and generic HTML tables.
+ * from 新正方 (ZFSoft / 大连海洋大学), 强智 (QZ), 青果 (Kingosoft), URP, and generic HTML tables.
  */
 export const EDUCATION_SYSTEM_INJECT_JS = `
 (function() {
   try {
     var payload = { type: 'CLASSFLOW_SCRAPE', format: 'none', data: '' };
 
-    // 1. Check if page has 新正方 timetable container (#kbgrid_table_0 / .timetable_con)
-    var zfTable = document.getElementById('kbgrid_table_0') || document.querySelector('table.timetable_con');
-    if (zfTable) {
-      payload.format = 'html';
-      payload.data = zfTable.outerHTML;
+    // Helper: parse 新正方 #kbgrid_table_0 directly into structured kbList JSON!
+    function extractZFSoftGrid(doc) {
+      var grid = doc.getElementById('kbgrid_table_0') || doc.querySelector('table.timetable_con') || doc.getElementById('ylkbTable');
+      if (!grid) return null;
+
+      var items = [];
+      var cells = grid.querySelectorAll('td[id]');
+      for (var i = 0; i < cells.length; i++) {
+        var td = cells[i];
+        var idParts = (td.id || '').split('-'); // e.g. "1-1" -> day 1, startNode 1
+        var day = parseInt(idParts[0], 10);
+        if (isNaN(day) || day < 1 || day > 7) continue;
+
+        var blocks = td.querySelectorAll('.timetable_con');
+        for (var b = 0; b < blocks.length; b++) {
+          var blk = blocks[b];
+          var titleEl = blk.querySelector('.title') || blk.querySelector('span.title') || blk.querySelector('font');
+          var rawText = (blk.innerText || '').trim();
+          if (!rawText) continue;
+          var lines = rawText.split(/\\n+/).map(function(s){ return s.trim(); }).filter(Boolean);
+          var name = titleEl ? (titleEl.innerText || '').trim() : (lines[0] || '');
+          name = name.replace(/[★☆●◆]/g, '').trim();
+          if (!name) continue;
+
+          var full = lines.join(' ');
+          var jcMatch = full.match(/(\\d+)\\s*[-~]\\s*(\\d+)\\s*节/);
+          var zcMatch = full.match(/(\\d+(?:\\s*[-~]\\s*\\d+)?\\s*周(?:\\([单双]\\)|[单双])?(?:,\\s*\\d+(?:\\s*[-~]\\s*\\d+)?\\s*周(?:\\([单双]\\)|[单双])?)*)/);
+
+          var room = '';
+          var teacher = '';
+          var ps = blk.querySelectorAll('p, font');
+          for (var p = 0; p < ps.length; p++) {
+            var pt = (ps[p].innerText || '').trim();
+            var titleAttr = ps[p].getAttribute('title') || '';
+            if (titleAttr.indexOf('上课地点') !== -1 || pt.indexOf('教室') !== -1) {
+              room = pt.replace(/上课地点[:：]?/, '').trim();
+            } else if (titleAttr.indexOf('教师') !== -1) {
+              teacher = pt.replace(/教师[:：]?/, '').trim();
+            }
+          }
+          if (!room && lines.length >= 3) room = lines[2];
+          if (!teacher && lines.length >= 4) teacher = lines[3];
+
+          var startSec = jcMatch ? parseInt(jcMatch[1], 10) : (parseInt(idParts[1], 10) || 1);
+          var endSec = jcMatch ? parseInt(jcMatch[2], 10) : Math.min(12, startSec + 1);
+
+          items.push({
+            kcmc: name,
+            xm: teacher || '教务导入',
+            cdmc: room || '待定教室',
+            xqj: String(day),
+            jcs: startSec + '-' + endSec,
+            zcd: zcMatch ? zcMatch[1] : '1-16周'
+          });
+        }
+      }
+      if (items.length > 0) return JSON.stringify({ kbList: items });
+      return grid.outerHTML;
+    }
+
+    // 1. Check main document for 新正方
+    var zfData = extractZFSoftGrid(document);
+    if (zfData) {
+      payload.format = zfData.charAt(0) === '{' ? 'json' : 'html';
+      payload.data = zfData;
       window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(payload));
       return true;
     }
 
-    // 2. Check 强智教务 (#kbtable / #timetable)
-    var qzTable = document.getElementById('kbtable') || document.getElementById('timetable');
-    if (qzTable) {
-      payload.format = 'html';
-      payload.data = qzTable.outerHTML;
-      window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(payload));
-      return true;
-    }
-
-    // 3. Check inside iframes (common in 旧正方 / 青果 / URP)
+    // 2. Check inside iframes (common in 新正方 / 旧正方 / 青果 / URP)
     var iframes = document.querySelectorAll('iframe');
     for (var i = 0; i < iframes.length; i++) {
       try {
         var doc = iframes[i].contentDocument || iframes[i].contentWindow.document;
         if (!doc) continue;
-        var tbl = doc.getElementById('kbgrid_table_0') || doc.getElementById('kbtable') || doc.querySelector('table.timetable_con') || doc.querySelector('table');
+        var ifrZf = extractZFSoftGrid(doc);
+        if (ifrZf) {
+          payload.format = ifrZf.charAt(0) === '{' ? 'json' : 'html';
+          payload.data = ifrZf;
+          window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+          return true;
+        }
+        var tbl = doc.getElementById('kbtable') || doc.getElementById('timetable') || doc.querySelector('table');
         if (tbl && tbl.innerText && tbl.innerText.length > 60) {
           payload.format = 'html';
           payload.data = tbl.outerHTML;
@@ -508,6 +566,15 @@ export const EDUCATION_SYSTEM_INJECT_JS = `
           return true;
         }
       } catch (e) {}
+    }
+
+    // 3. Check 强智教务 (#kbtable / #timetable)
+    var qzTable = document.getElementById('kbtable') || document.getElementById('timetable');
+    if (qzTable) {
+      payload.format = 'html';
+      payload.data = qzTable.outerHTML;
+      window.ReactNativeWebView && window.ReactNativeWebView.postMessage(JSON.stringify(payload));
+      return true;
     }
 
     // 4. Fallback: find largest table on page containing week/course keywords

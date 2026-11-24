@@ -262,29 +262,32 @@ export interface SchoolPreset {
   tip: string;
 }
 
+export const DLOU_SSO_URL =
+  'https://portal.dlou.edu.cn/auth/cas/login?service=https%3A%2F%2Fjwxt.dlou.edu.cn%2Fsso%2Fddlogin';
+
 export const SCHOOL_EDU_PRESETS: SchoolPreset[] = [
   {
-    name: '新正方教务系统 (通用)',
-    system: '新正方 ZFSoft',
-    url: 'https://jwgl.example.edu.cn/jwglxt/',
-    tip: '登录后进入「信息查询 → 学生课表查询」，等待表格加载后点击一键抓取',
+    name: '大连海洋大学 (统一身份认证)',
+    system: '大海大 · 新正方',
+    url: DLOU_SSO_URL,
+    tip: '使用学号与统一身份认证密码登录 → 进入「信息查询 → 学生课表查询」→ 点击下方「一键抓取」',
+  },
+  {
+    name: '大连海洋大学 (教务直连)',
+    system: '大海大 · 教务',
+    url: 'https://jwxt.dlou.edu.cn/',
+    tip: '已登录过统一身份认证或使用教务账号直接登录时可选此入口',
   },
   {
     name: '强智教务系统 (通用)',
     system: '强智 QZ',
-    url: 'https://jwxt.example.edu.cn/jsxsd/',
+    url: 'https://jwxt.dlou.edu.cn/jsxsd/',
     tip: '登录后进入「培养管理 → 学期理论课表」，点击一键抓取即可',
   },
   {
-    name: '青果教务系统 (通用)',
-    system: '青果 Kingosoft',
-    url: 'https://jw.example.edu.cn/',
-    tip: '登录后切换到「我的课表 / 学期课表」页面后点击抓取',
-  },
-  {
-    name: 'URP 综合教务系统',
-    system: 'URP 教务',
-    url: 'https://urp.example.edu.cn/',
-    tip: '登录后进入「选课管理 → 本学期课表」点击一键抓取',
+    name: '自定义学校教务网址',
+    system: '新正方 / 青果 / URP',
+    url: DLOU_SSO_URL,
+    tip: '可在顶部地址栏直接输入任意高校教务系统网址',
   },
 ];
