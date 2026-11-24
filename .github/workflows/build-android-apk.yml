@@ -37,9 +37,34 @@ jobs:
           chmod +x gradlew
           ./gradlew assembleRelease
 
-      - name: Upload APK artifact
+      - name: Sign and verify APK (v1 + v2 + v3)
+        run: |
+          BUILD_TOOLS_DIR=$(ls -d "$ANDROID_HOME/build-tools"/* | sort -V | tail -n 1)
+          APK_IN="android/app/build/outputs/apk/release/app-release.apk"
+          APK_ALIGNED="classflow-aligned.apk"
+          APK_OUT="classflow-timetable.apk"
+
+          keytool -genkeypair -v -storetype PKCS12 \
+            -keystore classflow-release.keystore \
+            -alias classflow -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass classflow123 -keypass classflow123 \
+            -dname "CN=ClassFlow, OU=Dev, O=ClassFlow, L=Beijing, S=Beijing, C=CN"
+
+          "$BUILD_TOOLS_DIR/zipalign" -f -p 4 "$APK_IN" "$APK_ALIGNED"
+          "$BUILD_TOOLS_DIR/apksigner" sign \
+            --ks classflow-release.keystore \
+            --ks-key-alias classflow \
+            --ks-pass pass:classflow123 \
+            --key-pass pass:classflow123 \
+            --out "$APK_OUT" \
+            "$APK_ALIGNED"
+
+          "$BUILD_TOOLS_DIR/apksigner" verify --verbose "$APK_OUT"
+          ls -lh "$APK_OUT"
+
+      - name: Upload signed APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: ClassFlow-Timetable-APK
-          path: android/app/build/outputs/apk/release/app-release.apk
+          path: classflow-timetable.apk
           retention-days: 30
